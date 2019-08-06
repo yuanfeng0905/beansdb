@@ -16,40 +16,42 @@
 
 #include "beansdb.h"
 #include "hstore.h"
-#include <stdio.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <stdlib.h>
 
 #if HAVE_UNISTD_H
-#include <unistd.h>
+#    include <unistd.h>
 #endif
 
-
-#include "util.h"
 #include "log.h"
+#include "util.h"
 
 #define MAX_ITEM_FREELIST_LENGTH 4000
 #define INIT_ITEM_FREELIST_LENGTH 500
 
-static size_t item_make_header(const uint8_t nkey, const int flags, const int nbytes, char *suffix, uint8_t *nsuffix);
+static size_t item_make_header(const uint8_t nkey,
+                               const int     flags,
+                               const int     nbytes,
+                               char*         suffix,
+                               uint8_t*      nsuffix);
 
-static item **freeitem;
-static int freeitemtotal;
-static int freeitemcurr;
+static item** freeitem;
+static int    freeitemtotal;
+static int    freeitemcurr;
 
-extern HStore *store;
+extern HStore* store;
 
 void item_init(void)
 {
     freeitemtotal = INIT_ITEM_FREELIST_LENGTH;
     freeitemcurr  = 0;
 
-    freeitem = (item **)safe_malloc(sizeof(item *) * freeitemtotal);
+    freeitem = (item**)safe_malloc(sizeof(item*) * freeitemtotal);
     return;
 }
 
@@ -57,20 +59,19 @@ void item_init(void)
  * Returns a item buffer from the freelist, if any. Sholud call
  * item_from_freelist for thread safty.
  * */
-item *do_item_from_freelist(void)
+item* do_item_from_freelist(void)
 {
-    item *s;
+    item* s;
 
-    if (freeitemcurr > 0)
-    {
+    if (freeitemcurr > 0) {
         s = freeitem[--freeitemcurr];
     }
-    else
-    {
+    else {
         /* If try_malloc fails, let the logic fall through without spamming
          * STDERR on the server. */
-        s = (item *)try_malloc(settings.item_buf_size);
-        if (s) memset(s, 0, settings.item_buf_size);
+        s = (item*)try_malloc(settings.item_buf_size);
+        if (s)
+            memset(s, 0, settings.item_buf_size);
     }
 
     return s;
@@ -80,26 +81,23 @@ item *do_item_from_freelist(void)
  * Adds a item to the freelist. Should call
  * item_add_to_freelist for thread safty.
  */
-int do_item_add_to_freelist(item *it)
+int do_item_add_to_freelist(item* it)
 {
-    if (freeitemcurr < freeitemtotal)
-    {
+    if (freeitemcurr < freeitemtotal) {
         freeitem[freeitemcurr++] = it;
         return 0;
     }
-    else
-    {
-        if (freeitemtotal >= MAX_ITEM_FREELIST_LENGTH)
-        {
+    else {
+        if (freeitemtotal >= MAX_ITEM_FREELIST_LENGTH) {
             return 1;
         }
         /* try to enlarge free item buffer array */
-        item **new_freeitem = (item **)try_realloc(freeitem, sizeof(item *) * freeitemtotal * 2);
-        if (new_freeitem)
-        {
+        item** new_freeitem =
+            (item**)try_realloc(freeitem, sizeof(item*) * freeitemtotal * 2);
+        if (new_freeitem) {
             freeitemtotal *= 2;
             log_notice("freeitemtotal doubled to %d", freeitemtotal);
-            freeitem = new_freeitem;
+            freeitem                 = new_freeitem;
             freeitem[freeitemcurr++] = it;
             return 0;
         }
@@ -119,54 +117,55 @@ int do_item_add_to_freelist(item *it)
  *
  * Returns the total size of the header.
  */
-static size_t item_make_header(const uint8_t nkey, const int flags, const int nbytes,
-                               char *suffix, uint8_t *nsuffix)
+static size_t item_make_header(const uint8_t nkey,
+                               const int     flags,
+                               const int     nbytes,
+                               char*         suffix,
+                               uint8_t*      nsuffix)
 {
     /* suffix is defined at 40 chars elsewhere.. */
-    *nsuffix = (uint8_t)safe_snprintf(suffix, 40, " %d %d\r\n", flags, nbytes - 2);
+    *nsuffix =
+        (uint8_t)safe_snprintf(suffix, 40, " %d %d\r\n", flags, nbytes - 2);
     return sizeof(item) + nkey + *nsuffix + nbytes;
 }
 
 /*
  * alloc a item buffer, and init it.
  */
-item *item_alloc1(char *key, const size_t nkey, const int flags, const int nbytes)
+item* item_alloc1(char*        key,
+                  const size_t nkey,
+                  const int    flags,
+                  const int    nbytes)
 {
     uint8_t nsuffix;
-    item *it;
-    char suffix[40];
+    item*   it;
+    char    suffix[40];
     size_t ntotal = item_make_header(nkey + 1, flags, nbytes, suffix, &nsuffix);
 
-    if (ntotal > settings.item_buf_size)
-    {
-        it = (item *)try_malloc(ntotal);
-        if (it == NULL)
-        {
+    if (ntotal > settings.item_buf_size) {
+        it = (item*)try_malloc(ntotal);
+        if (it == NULL) {
             return NULL;
         }
         memset(it, 0, ntotal);
-        if (settings.verbose > 1)
-        {
+        if (settings.verbose > 1) {
             log_debug("alloc a item buffer from try_malloc.");
         }
     }
-    else
-    {
+    else {
         it = item_from_freelist();
-        if (it == NULL)
-        {
+        if (it == NULL) {
             return NULL;
         }
-        if (settings.verbose > 1)
-        {
+        if (settings.verbose > 1) {
             log_debug("alloc a item buffer from freelist.");
         }
     }
 
-    it->nkey = nkey;
+    it->nkey   = nkey;
     it->nbytes = nbytes;
     strcpy(ITEM_key(it), key);
-    memcpy(ITEM_suffix(it), suffix, (size_t)nsuffix); // safe
+    memcpy(ITEM_suffix(it), suffix, (size_t)nsuffix);  // safe
     it->nsuffix = nsuffix;
     return it;
 }
@@ -175,7 +174,7 @@ item *item_alloc1(char *key, const size_t nkey, const int flags, const int nbyte
  * free a item buffer. here 'it' must be a full item.
  */
 
-int item_free(item *it)
+int item_free(item* it)
 {
     size_t ntotal = 0;
     if (NULL == it)
@@ -183,29 +182,25 @@ int item_free(item *it)
 
     /* ntotal may be wrong, if 'it' is not a full item. */
     ntotal = ITEM_ntotal(it);
-    if (ntotal > settings.item_buf_size)
-    {
-        if (settings.verbose > 1)
-        {
-            log_error("ntotal: %"PRIuS", use free() directly.", ntotal);
+    if (ntotal > settings.item_buf_size) {
+        if (settings.verbose > 1) {
+            log_error("ntotal: %" PRIuS ", use free() directly.", ntotal);
         }
         free(it);
     }
-    else
-    {
-        if (0 != item_add_to_freelist(it))
-        {
-            if (settings.verbose > 1)
-            {
-                log_error("ntotal: %"PRIuS", add a item buffer to freelist fail, use free() directly.", ntotal);
+    else {
+        if (0 != item_add_to_freelist(it)) {
+            if (settings.verbose > 1) {
+                log_error("ntotal: %" PRIuS ", add a item buffer to freelist "
+                                            "fail, use free() directly.",
+                          ntotal);
             }
             free(it);
         }
-        else
-        {
-            if (settings.verbose > 1)
-            {
-                log_error("ntotal: %"PRIuS", add a item buffer to freelist.", ntotal);
+        else {
+            if (settings.verbose > 1) {
+                log_error("ntotal: %" PRIuS ", add a item buffer to freelist.",
+                          ntotal);
             }
         }
     }
@@ -213,19 +208,17 @@ int item_free(item *it)
 }
 
 /* if return item is not NULL, free by caller */
-item *item_get(char *key, unsigned int nkey)
+item* item_get(char* key, unsigned int nkey)
 {
-    item *it = NULL;
+    item*        it = NULL;
     unsigned int vlen;
-    uint32_t flag;
-    char *value = hs_get(store, key, &vlen, &flag);
-    if (value)
-    {
+    uint32_t     flag;
+    char*        value = hs_get(store, key, &vlen, &flag);
+    if (value) {
         it = item_alloc1(key, nkey, flag, vlen + 2);
-        if (it)
-        {
-            memcpy(ITEM_data(it), value, vlen); // safe
-            memcpy(ITEM_data(it) + vlen, "\r\n", 2); // safe
+        if (it) {
+            memcpy(ITEM_data(it), value, vlen);       // safe
+            memcpy(ITEM_data(it) + vlen, "\r\n", 2);  // safe
         }
         free(value);
     }
